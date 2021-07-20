@@ -280,11 +280,13 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	mq_backend *be = get_backend(queue);
 	mutex_lock(&be->mutex);
 	int curr_flag = get_flags(queue);
+	// check if length is 0
 	if (length == 0)
 	{
 		mutex_unlock(&be->mutex);
 		return 0;
 	}
+	// check is reader is enabled
 	else if (!(curr_flag & MSG_QUEUE_READER))
 	{
 		mutex_unlock(&be->mutex);
@@ -292,6 +294,7 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		report_error("msg_queue_read: read not available");
 		return -1;
 	}
+	// check when nonblock is on, is there enough material to read
 	else if (curr_flag & MSG_QUEUE_NONBLOCK)
 	{
 		if (!ring_buffer_used(&be->buffer))
@@ -303,11 +306,14 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		}
 	}
 	size_t size;
+	// wait till there's enough thing to read
 	while (ring_buffer_used(&be->buffer) == 0)
 	{
 		cond_wait(&be->empty, &be->mutex);
 	}
+	// read the header (size) without take it out of the buffer
 	ring_buffer_peek(&be->buffer, &size, sizeof(size_t));
+	// check if length is enough
 	if (length < size)
 	{
 		mutex_unlock(&be->mutex);
@@ -315,6 +321,7 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		report_error("msg_queue_read: Length is too short");
 		return ~size;
 	}
+	// do the actual read
 	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
 	ring_buffer_read(&be->buffer, buffer, size);
 	cond_signal(&be->full);
@@ -332,11 +339,13 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	mq_backend *be = get_backend(queue);
 	mutex_lock(&be->mutex);
 	int curr_flag = get_flags(queue);
+	// check if length is 0
 	if (length == 0)
 	{
 		mutex_unlock(&be->mutex);
 		return 0;
 	}
+	// check if writer is enabled
 	else if (!(curr_flag & MSG_QUEUE_WRITER))
 	{
 		mutex_unlock(&be->mutex);
@@ -344,6 +353,7 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		report_error("msg_queue_write: read not available");
 		return -1;
 	}
+	// check if buffer size is large enough
 	else if (be->buffer.size < length + sizeof(size_t))
 	{
 		mutex_unlock(&be->mutex);
@@ -351,6 +361,7 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		report_error("msg_queue_write: Non-blocking read, Message too long");
 		return -1;
 	}
+	// check when nonblock is on, is there enough space to write in
 	else if (curr_flag & MSG_QUEUE_NONBLOCK)
 	{
 		if (ring_buffer_free(&be->buffer) < length + sizeof(size_t))
@@ -361,11 +372,15 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 			return -1;
 		}
 	}
+	// wait till space is enough for the whole sentence
 	while (ring_buffer_free(&be->buffer) < length + sizeof(size_t))
 	{
 		cond_wait(&be->full, &be->mutex);
 	}
+	// do the write
+	// head
 	ring_buffer_write(&be->buffer, &length, sizeof(size_t));
+	// actual material
 	ring_buffer_write(&be->buffer, buffer, length);
 	cond_signal(&be->empty);
 	mutex_unlock(&be->mutex);
