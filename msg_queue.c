@@ -309,6 +309,13 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	// wait till there's enough thing to read
 	while (ring_buffer_used(&be->buffer) == 0)
 	{
+		if (be->no_writers)
+		{
+			mutex_unlock(&be->mutex);
+			errno = EPIPE;
+			report_error("msg_queue_read: Writer");
+			return -1;
+		}
 		cond_wait(&be->empty, &be->mutex);
 	}
 	// read the header (size) without take it out of the buffer
@@ -375,6 +382,13 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	// wait till space is enough for the whole sentence
 	while (ring_buffer_free(&be->buffer) < length + sizeof(size_t))
 	{
+		if (be->no_readers)
+		{
+			mutex_unlock(&be->mutex);
+			errno = EPIPE;
+			report_error("msg_queue_write: Reader");
+			return -1;
+		}
 		cond_wait(&be->full, &be->mutex);
 	}
 	// do the write
