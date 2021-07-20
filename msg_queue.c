@@ -337,11 +337,18 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		mutex_unlock(&be->mutex);
 		return 0;
 	}
+	else if (!(curr_flag & MSG_QUEUE_WRITER))
+	{
+		mutex_unlock(&be->mutex);
+		errno = EPERM;
+		report_error("msg_queue_write: read not available");
+		return -1;
+	}
 	else if (be->buffer.size < length + sizeof(size_t))
 	{
 		mutex_unlock(&be->mutex);
 		errno = EMSGSIZE;
-		report_error("msg_queue_write: Message too long");
+		report_error("msg_queue_write: Non-blocking read, Message too long");
 		return -1;
 	}
 	else if (curr_flag & MSG_QUEUE_NONBLOCK)
