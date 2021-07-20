@@ -303,18 +303,23 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		}
 	}
 	size_t size;
+	while (ring_buffer_used(&be->buffer) == 0)
+	{
+		cond_wait(&be->empty, &be->mutex);
+	}
 	ring_buffer_peek(&be->buffer, &size, sizeof(size_t));
 	if (length < size)
 	{
 		mutex_unlock(&be->mutex);
 		errno = EMSGSIZE;
-		report_info("msg_queue_read: Length is too short");
-		return -1;
+		report_error("msg_queue_read: Length is too short");
+		return ~size;
 	}
 	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
 	ring_buffer_read(&be->buffer, buffer, size);
+	cond_signal(&be->full);
 	mutex_unlock(&be->mutex);
-	return -1;
+	return size;
 }
 
 int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
@@ -349,11 +354,16 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 			return -1;
 		}
 	}
+	while (ring_buffer_free(&be->buffer) < length + sizeof(size_t))
+	{
+		cond_wait(&be->full, &be->mutex);
+	}
 	ring_buffer_write(&(be->buffer), &length, sizeof(size_t));
 	ring_buffer_write(&(be->buffer), buffer, length);
+	cond_signal(&be->empty);
 	mutex_unlock(&be->mutex);
 
-	return -1;
+	return 0;
 }
 
 int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
