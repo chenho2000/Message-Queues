@@ -358,8 +358,8 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	{
 		cond_wait(&be->full, &be->mutex);
 	}
-	ring_buffer_write(&(be->buffer), &length, sizeof(size_t));
-	ring_buffer_write(&(be->buffer), buffer, length);
+	ring_buffer_write(&be->buffer, &length, sizeof(size_t));
+	ring_buffer_write(&be->buffer, buffer, length);
 	cond_signal(&be->empty);
 	mutex_unlock(&be->mutex);
 

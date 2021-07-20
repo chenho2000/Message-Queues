@@ -138,7 +138,6 @@ int main(int argc, char *argv[])
 	// count originally as an argument.
 	int count;
 	size_t len = msg_queue_read(queue, &count, sizeof(int));
-	fprintf(stderr, "%ld\n", len);
 	assert(len == sizeof(int));
 	(void)len;
 	assert(count == numberCount);
