@@ -312,9 +312,7 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		if (be->no_writers)
 		{
 			mutex_unlock(&be->mutex);
-			errno = EPIPE;
-			report_error("msg_queue_read: All writer handles to the queue have been closed (broken pipe).");
-			return -1;
+			return 0;
 		}
 		cond_wait(&be->empty, &be->mutex);
 	}
