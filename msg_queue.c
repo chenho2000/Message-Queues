@@ -402,11 +402,47 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	return 0;
 }
 
+#define ALL_EVENTS_FLAGS (MQPOLL_NOWRITERS | MQPOLL_NOREADERS | MQPOLL_READABLE | MQPOLL_WRITABLE)
 int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 {
 	//TODO
 	(void)fds;
 	(void)nfds;
 	errno = ENOSYS;
+
+	if (nfds == 0){
+		errno = EINVAL;
+		report_error("msg_queue_poll: No events are subscribed to");
+		return -1;
+	}
+
+	unsigned int num_null = 0;
+	for (unsigned int i = 0; i < nfds; i++){
+		if(fds[i].queue == MSG_QUEUE_NULL) {
+			num_null++;
+			fds[i].revents = 0;
+			continue;
+		}
+		if(fds[i].events & !ALL_EVENTS_FLAGS){
+			errno = EINVAL;
+			report_error("msg_queue_poll: events field in a pollfd entry is invalid");
+			return -1;
+		}
+		if(((fds[i].events & MQPOLL_READABLE) && !(get_flags(fds[i].queue) & MSG_QUEUE_READER))  \
+			|| ((fds[i].events & MQPOLL_WRITABLE) && !(get_flags(fds[i].queue) & MSG_QUEUE_WRITER))){
+				errno = EINVAL;
+				report_error("msg_queue_poll: MQPOLL_READABLE requested for a non-reader queue handle or MQPOLL_WRITABLE requested for a non-writer queue handle");
+				return -1;
+			}
+	}
+
+	if(num_null == nfds){
+		errno = EINVAL;
+		report_error("msg_queue_poll: No events are subscribed to");
+		return -1;
+	}
+
+	
 	return -1;
+
 }
