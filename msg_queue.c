@@ -290,8 +290,8 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	else if (!(curr_flag & MSG_QUEUE_READER))
 	{
 		mutex_unlock(&be->mutex);
-		errno = EPERM;
-		report_error("msg_queue_read: read not available");
+		errno = EBADF;
+		report_error("msg_queue_read: queue is not a valid message queue handle open for reads.");
 		return -1;
 	}
 	// check when nonblock is on, is there enough material to read
@@ -301,7 +301,7 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		{
 			mutex_unlock(&be->mutex);
 			errno = EAGAIN;
-			report_error("msg_queue_read: Non-blocking read, queue is empty");
+			report_error("msg_queue_read:The queue handle is non-blocking and the read would block because there is no message in the queue to read.");
 			return -1;
 		}
 	}
@@ -313,7 +313,7 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		{
 			mutex_unlock(&be->mutex);
 			errno = EPIPE;
-			report_error("msg_queue_read: Writer");
+			report_error("msg_queue_read: All writer handles to the queue have been closed (broken pipe).");
 			return -1;
 		}
 		cond_wait(&be->empty, &be->mutex);
@@ -325,7 +325,7 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	{
 		mutex_unlock(&be->mutex);
 		errno = EMSGSIZE;
-		report_error("msg_queue_read: Length is too short");
+		report_error("msg_queue_read: The buffer is not large enough to hold the message.");
 		return ~size;
 	}
 	// do the actual read
@@ -350,14 +350,16 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	if (length == 0)
 	{
 		mutex_unlock(&be->mutex);
-		return 0;
+		errno = EINVAL;
+		report_error("msg_queue_write: Zero length message.");
+		return -1;
 	}
 	// check if writer is enabled
 	else if (!(curr_flag & MSG_QUEUE_WRITER))
 	{
 		mutex_unlock(&be->mutex);
-		errno = EPERM;
-		report_error("msg_queue_write: read not available");
+		errno = EBADF;
+		report_error("msg_queue_write: queue is not a valid message queue handle open for writes.");
 		return -1;
 	}
 	// check if buffer size is large enough
@@ -365,7 +367,7 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	{
 		mutex_unlock(&be->mutex);
 		errno = EMSGSIZE;
-		report_error("msg_queue_write: Non-blocking read, Message too long");
+		report_error("msg_queue_write: The capacity of the queue is not large enough for the message.");
 		return -1;
 	}
 	// check when nonblock is on, is there enough space to write in
@@ -374,8 +376,8 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		if (ring_buffer_free(&be->buffer) < length + sizeof(size_t))
 		{
 			mutex_unlock(&be->mutex);
-			errno = EMSGSIZE;
-			report_error("msg_queue_write: Message too long");
+			errno = EAGAIN;
+			report_error("msg_queue_write: The queue handle is non-blocking and the write would block because there is not enough space in the queue to write message.");
 			return -1;
 		}
 	}
@@ -386,7 +388,7 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		{
 			mutex_unlock(&be->mutex);
 			errno = EPIPE;
-			report_error("msg_queue_write: Reader");
+			report_error("msg_queue_write: All reader handles to the queue have been closed (broken pipe).");
 			return -1;
 		}
 		cond_wait(&be->full, &be->mutex);
@@ -410,39 +412,42 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 	(void)nfds;
 	errno = ENOSYS;
 
-	if (nfds == 0){
+	if (nfds == 0)
+	{
 		errno = EINVAL;
 		report_error("msg_queue_poll: No events are subscribed to");
 		return -1;
 	}
 
 	unsigned int num_null = 0;
-	for (unsigned int i = 0; i < nfds; i++){
-		if(fds[i].queue == MSG_QUEUE_NULL) {
+	for (unsigned int i = 0; i < nfds; i++)
+	{
+		if (fds[i].queue == MSG_QUEUE_NULL)
+		{
 			num_null++;
 			fds[i].revents = 0;
 			continue;
 		}
-		if(fds[i].events & !ALL_EVENTS_FLAGS){
+		if (fds[i].events & !ALL_EVENTS_FLAGS)
+		{
 			errno = EINVAL;
 			report_error("msg_queue_poll: events field in a pollfd entry is invalid");
 			return -1;
 		}
-		if(((fds[i].events & MQPOLL_READABLE) && !(get_flags(fds[i].queue) & MSG_QUEUE_READER))  \
-			|| ((fds[i].events & MQPOLL_WRITABLE) && !(get_flags(fds[i].queue) & MSG_QUEUE_WRITER))){
-				errno = EINVAL;
-				report_error("msg_queue_poll: MQPOLL_READABLE requested for a non-reader queue handle or MQPOLL_WRITABLE requested for a non-writer queue handle");
-				return -1;
-			}
+		if (((fds[i].events & MQPOLL_READABLE) && !(get_flags(fds[i].queue) & MSG_QUEUE_READER)) || ((fds[i].events & MQPOLL_WRITABLE) && !(get_flags(fds[i].queue) & MSG_QUEUE_WRITER)))
+		{
+			errno = EINVAL;
+			report_error("msg_queue_poll: MQPOLL_READABLE requested for a non-reader queue handle or MQPOLL_WRITABLE requested for a non-writer queue handle");
+			return -1;
+		}
 	}
 
-	if(num_null == nfds){
+	if (num_null == nfds)
+	{
 		errno = EINVAL;
 		report_error("msg_queue_poll: No events are subscribed to");
 		return -1;
 	}
 
-	
 	return -1;
-
 }
