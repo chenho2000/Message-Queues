@@ -342,10 +342,6 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	// do the actual read
 	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
 	ring_buffer_read(&be->buffer, buffer, size);
-	if (be->writers > 0 && ring_buffer_used(&be->buffer) == 0)
-	{
-		be->curr &= ~MQPOLL_READABLE;
-	}
 	cond_signal(&be->full);
 	be->curr |= MQPOLL_WRITABLE;
 	list_entry *curr_entry = NULL;
@@ -428,10 +424,6 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	ring_buffer_write(&be->buffer, &length, sizeof(size_t));
 	// actual material
 	ring_buffer_write(&be->buffer, buffer, length);
-	if (be->readers > 0 && ring_buffer_free(&be->buffer) == 0)
-	{
-		be->curr &= ~MQPOLL_WRITABLE;
-	}
 	cond_signal(&be->empty);
 	list_entry *curr_entry = NULL;
 	wait_queue *dentry = NULL;
