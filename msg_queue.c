@@ -451,7 +451,6 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	return 0;
 }
 
-
 #define ALL_EVENTS_FLAGS (MQPOLL_NOWRITERS | MQPOLL_NOREADERS | MQPOLL_READABLE | MQPOLL_WRITABLE)
 int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 {
