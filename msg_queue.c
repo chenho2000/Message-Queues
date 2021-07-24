@@ -451,28 +451,6 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	return 0;
 }
 
-int report_events(msg_queue_pollfd *fds, size_t nfds)
-{
-	int num_ready = 0;
-	for (unsigned int i = 0; i < nfds; ++i)
-	{
-		if (fds[i].queue == MSG_QUEUE_NULL)
-			continue;
-
-		int curr_qevents = get_backend(fds[i].queue)->curr;
-		//populate revents
-		if ((fds[i].revents = curr_qevents & fds[i].events) > 0)
-		{
-			num_ready++;
-		}
-
-		if (get_flags(fds[i].queue) & (MSG_QUEUE_READER | MSG_QUEUE_WRITER))
-		{
-			fds[i].revents = fds[i].revents | (curr_qevents & (MQPOLL_NOWRITERS | MQPOLL_NOREADERS));
-		}
-	}
-	return num_ready;
-}
 
 #define ALL_EVENTS_FLAGS (MQPOLL_NOWRITERS | MQPOLL_NOREADERS | MQPOLL_READABLE | MQPOLL_WRITABLE)
 int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
