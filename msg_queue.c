@@ -275,34 +275,17 @@ int msg_queue_close(msg_queue_t *queue)
 	//      msg_queue_read()) and msg_queue_poll() calls for this queue.
 	if (mq->no_readers)
 	{
-		mq->curr = mq->curr | MQPOLL_WRITABLE | MQPOLL_NOREADERS;
 		cond_broadcast(&(mq->full));
+		mq->curr |= MQPOLL_WRITABLE | MQPOLL_NOREADERS;
 	}
 	if (mq->no_writers)
 	{
-		mq->curr = mq->curr | MQPOLL_READABLE | MQPOLL_NOWRITERS;
 		cond_broadcast(&(mq->empty));
+		mq->curr |= MQPOLL_READABLE | MQPOLL_NOWRITERS;
 	}
 	*queue = MSG_QUEUE_NULL;
 	mutex_unlock(&mq->mutex);
 	return 0;
-}
-
-static void update(msg_queue_t queue, int event)
-{
-	mq_backend *mq = get_backend(queue);
-	mq->curr = mq->curr | event;
-	list_entry *pos;
-	list_for_each(pos, &mq->the_list)
-	{
-		wait_queue *dentry = container_of(pos, wait_queue, lst);
-		if (dentry->curr_event & mq->curr)
-		{
-			mutex_lock(&dentry->lock);
-			cond_signal(&dentry->status);
-			mutex_unlock(&dentry->lock);
-		}
-	}
 }
 
 ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
@@ -340,7 +323,6 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	{
 		if (be->no_writers)
 		{
-			update(queue, MQPOLL_NOWRITERS);
 			mutex_unlock(&be->mutex);
 			return 0;
 		}
@@ -360,13 +342,24 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	// do the actual read
 	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
 	ring_buffer_read(&be->buffer, buffer, size);
-	cond_signal(&be->full);
-
 	if (be->writers > 0 && ring_buffer_used(&be->buffer) == 0)
 	{
 		be->curr &= ~MQPOLL_READABLE;
 	}
-	update(queue, MQPOLL_WRITABLE);
+	cond_signal(&be->full);
+	be->curr |= MQPOLL_WRITABLE;
+	list_entry *curr_entry = NULL;
+	wait_queue *dentry = NULL;
+	list_for_each(curr_entry, &be->the_list)
+	{
+		dentry = container_of(curr_entry, wait_queue, lst);
+		if (dentry->curr_event & be->curr)
+		{
+			mutex_lock(&dentry->lock);
+			cond_signal(&dentry->status);
+			mutex_unlock(&dentry->lock);
+		}
+	}
 	mutex_unlock(&be->mutex);
 	return size;
 }
@@ -421,7 +414,6 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	{
 		if (be->no_readers)
 		{
-			update(queue, MQPOLL_NOREADERS);
 			mutex_unlock(&be->mutex);
 			errno = EPIPE;
 			report_error("msg_queue_write: All reader handles to the queue have been closed (broken pipe).");
@@ -429,17 +421,30 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		}
 		cond_wait(&be->full, &be->mutex);
 	}
+
+	be->curr |= MQPOLL_READABLE;
 	// do the write
 	// head
 	ring_buffer_write(&be->buffer, &length, sizeof(size_t));
 	// actual material
 	ring_buffer_write(&be->buffer, buffer, length);
-	cond_signal(&be->empty);
 	if (be->readers > 0 && ring_buffer_free(&be->buffer) == 0)
 	{
-		be->curr = be->curr & ~MQPOLL_WRITABLE;
+		be->curr &= ~MQPOLL_WRITABLE;
 	}
-	update(queue, MQPOLL_READABLE);
+	cond_signal(&be->empty);
+	list_entry *curr_entry = NULL;
+	wait_queue *dentry = NULL;
+	list_for_each(curr_entry, &be->the_list)
+	{
+		dentry = container_of(curr_entry, wait_queue, lst);
+		if (dentry->curr_event & be->curr)
+		{
+			mutex_lock(&dentry->lock);
+			cond_signal(&dentry->status);
+			mutex_unlock(&dentry->lock);
+		}
+	}
 	mutex_unlock(&be->mutex);
 
 	return 0;
@@ -547,13 +552,14 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 	mutex_unlock(&lock);
 	for (long unsigned int i = 0; i < nfds; i++)
 	{
-		if (fds[i].queue != MSG_QUEUE_NULL)
+		if (fds[i].queue == MSG_QUEUE_NULL)
 		{
-			mq_backend *mq = get_backend(fds[i].queue);
-			mutex_lock(&mq->mutex);
-			list_del(&mq->the_list, &queue[i].lst);
-			mutex_unlock(&mq->mutex);
+			continue;
 		}
+		mq_backend *mq = get_backend(fds[i].queue);
+		mutex_lock(&mq->mutex);
+		list_init(&mq->the_list);
+		mutex_unlock(&mq->mutex);
 	}
 	cond_destroy(&status);
 	mutex_unlock(&lock);
