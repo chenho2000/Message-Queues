@@ -28,15 +28,10 @@
 #include "msg_queue.h"
 #include "ring_buffer.h"
 
-typedef struct wait_thread
-{
-	cond_t status; //this thread will wait until signaled that it is ready with events to report
-	mutex_t lock;  //threads editing the queue and this polling thread must aquire this lock
-} wait_thread;
-
 typedef struct wait_queue
 {
-	wait_thread *thread;
+	cond_t status;
+	mutex_t lock;
 	int curr_event;
 	list_entry lst;
 } wait_queue;
@@ -303,10 +298,9 @@ static void update(msg_queue_t queue, int event)
 		wait_queue *dentry = container_of(pos, wait_queue, lst);
 		if (dentry->curr_event & mq->curr)
 		{
-			wait_thread *thread = dentry->thread;
-			mutex_lock(&thread->lock);
-			cond_signal(&thread->status);
-			mutex_unlock(&thread->lock);
+			mutex_lock(&dentry->lock);
+			cond_signal(&dentry->status);
+			mutex_unlock(&dentry->lock);
 		}
 	}
 }
@@ -451,7 +445,6 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	return 0;
 }
 
-
 #define ALL_EVENTS_FLAGS (MQPOLL_NOWRITERS | MQPOLL_NOREADERS | MQPOLL_READABLE | MQPOLL_WRITABLE)
 int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 {
@@ -497,12 +490,13 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		return -1;
 	}
 
-	wait_thread *thread = (wait_thread *)malloc(sizeof(wait_thread));
-	cond_init(&thread->status);
-	mutex_init(&thread->lock);
+	cond_t status;
+	mutex_t lock;
+	cond_init(&status);
+	mutex_init(&lock);
 	wait_queue *queue = (wait_queue *)malloc(sizeof(wait_queue) * nfds);
 
-	if (thread == NULL || queue == NULL)
+	if (queue == NULL)
 	{
 		report_error("Malloc: not enough space for queue");
 		return -1;
@@ -515,13 +509,14 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		mutex_lock(&mq->mutex);
 		if (fds[i].queue != MSG_QUEUE_NULL)
 		{
-			queue[i].thread = thread;
+			queue[i].lock = lock;
+			queue[i].status = status;
 			queue[i].curr_event = fds[i].events;
 			list_add_tail(&mq->the_list, &queue[i].lst);
 		}
 		mutex_unlock(&mq->mutex);
 	}
-	mutex_lock(&thread->lock);
+	mutex_lock(&lock);
 	int ready = 0;
 	while (!ready)
 	{
@@ -547,9 +542,9 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		{
 			break;
 		}
-		cond_wait(&thread->status, &thread->lock);
+		cond_wait(&status, &lock);
 	}
-	mutex_unlock(&thread->lock);
+	mutex_unlock(&lock);
 	for (long unsigned int i = 0; i < nfds; i++)
 	{
 		if (fds[i].queue != MSG_QUEUE_NULL)
@@ -560,9 +555,8 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 			mutex_unlock(&mq->mutex);
 		}
 	}
-	cond_destroy(&thread->status);
-	mutex_unlock(&thread->lock);
-	free(thread);
+	cond_destroy(&status);
+	mutex_unlock(&lock);
 	free(queue);
 	return ready;
 }
