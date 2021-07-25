@@ -535,7 +535,7 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 				ready++;
 			}
 		}
-		if (ready)
+		if ((size_t)ready == nfds)
 		{
 			break;
 		}
