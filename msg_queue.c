@@ -515,7 +515,7 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 	}
 	mutex_lock(&lock);
 	int ready = 0;
-	while (!ready)
+	while ((size_t)ready < nfds)
 	{
 		for (long unsigned int i = 0; i < nfds; i++)
 		{
