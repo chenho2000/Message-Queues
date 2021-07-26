@@ -495,7 +495,8 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 
 	if (queue == NULL)
 	{
-		report_error("Malloc: not enough space for queue");
+		errno = ENOMEM;
+		report_error("msg_queue_poll: not enough memory for queue");
 		return -1;
 	}
 
