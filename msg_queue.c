@@ -28,12 +28,17 @@
 #include "msg_queue.h"
 #include "ring_buffer.h"
 
+typedef struct public_lock
+{
+	mutex_t lock;
+	cond_t status;
+} public_lock;
+
 typedef struct wait_queue
 {
-	cond_t status;
-	mutex_t lock;
 	int curr_event;
 	list_entry lst;
+	public_lock *public;
 } wait_queue;
 
 // Message queue implementation backend
@@ -343,6 +348,10 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
 	ring_buffer_read(&be->buffer, buffer, size);
 	cond_signal(&be->full);
+	if (be->writers > 0 && ring_buffer_used(&be->buffer) == 0)
+	{
+		be->curr &= ~MQPOLL_READABLE;
+	}
 	be->curr |= MQPOLL_WRITABLE;
 	list_entry *curr_entry = NULL;
 	wait_queue *dentry = NULL;
@@ -351,9 +360,10 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		dentry = container_of(curr_entry, wait_queue, lst);
 		if (dentry->curr_event & be->curr)
 		{
-			mutex_lock(&dentry->lock);
-			cond_signal(&dentry->status);
-			mutex_unlock(&dentry->lock);
+			public_lock *public = dentry->public;
+			mutex_lock(&public->lock);
+			cond_signal(&public->status);
+			mutex_unlock(&public->lock);
 		}
 	}
 	mutex_unlock(&be->mutex);
@@ -425,6 +435,10 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	// actual material
 	ring_buffer_write(&be->buffer, buffer, length);
 	cond_signal(&be->empty);
+	if (be->readers > 0 && ring_buffer_free(&be->buffer) == 0)
+	{
+		be->curr = be->curr & ~MQPOLL_WRITABLE;
+	}
 	list_entry *curr_entry = NULL;
 	wait_queue *dentry = NULL;
 	list_for_each(curr_entry, &be->the_list)
@@ -432,9 +446,10 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		dentry = container_of(curr_entry, wait_queue, lst);
 		if (dentry->curr_event & be->curr)
 		{
-			mutex_lock(&dentry->lock);
-			cond_signal(&dentry->status);
-			mutex_unlock(&dentry->lock);
+			public_lock *public = dentry->public;
+			mutex_lock(&public->lock);
+			cond_signal(&public->status);
+			mutex_unlock(&public->lock);
 		}
 	}
 	mutex_unlock(&be->mutex);
@@ -487,62 +502,61 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		return -1;
 	}
 
-	cond_t status;
-	mutex_t lock;
-	cond_init(&status);
-	mutex_init(&lock);
 	wait_queue *queue = (wait_queue *)malloc(sizeof(wait_queue) * nfds);
-
-	if (queue == NULL)
+	public_lock *public = (public_lock *)malloc(sizeof(public_lock));
+	if (!queue || !public)
 	{
 		errno = ENOMEM;
 		report_error("msg_queue_poll: not enough memory for queue");
 		return -1;
 	}
-
-	for (long unsigned int i = 0; i < nfds; i++)
+	cond_init(&public->status);
+	mutex_init(&public->lock);
+	for (unsigned int i = 0; i < nfds; ++i)
 	{
-		list_entry_init(&queue[i].lst);
 		mq_backend *mq = get_backend(fds[i].queue);
+		if (fds[i].queue == MSG_QUEUE_NULL)
+			continue;
 		mutex_lock(&mq->mutex);
-		if (fds[i].queue != MSG_QUEUE_NULL)
-		{
-			queue[i].lock = lock;
-			queue[i].status = status;
-			queue[i].curr_event = fds[i].events;
-			list_add_tail(&mq->the_list, &queue[i].lst);
-		}
+		list_entry_init(&queue[i].lst);
+		queue[i].public = public;
+		queue[i].curr_event = fds[i].events;
+		list_add_tail(&mq->the_list, &queue[i].lst);
 		mutex_unlock(&mq->mutex);
 	}
-	mutex_lock(&lock);
+
+	mutex_lock(&public->lock);
 	int ready = 0;
 	while (!ready)
 	{
 		for (long unsigned int i = 0; i < nfds; i++)
 		{
-			mq_backend *mq = get_backend(fds[i].queue);
-			int curr_flag = get_flags(fds[i].queue);
-			fds[i].revents = fds[i].events & mq->curr;
-			if (curr_flag & MSG_QUEUE_WRITER)
+			if (fds[i].queue != MSG_QUEUE_NULL)
 			{
-				fds[i].revents |= mq->curr & MQPOLL_NOWRITERS;
-			}
-			if (curr_flag & MSG_QUEUE_READER)
-			{
-				fds[i].revents |= mq->curr & MQPOLL_NOREADERS;
-			}
-			if (fds[i].revents)
-			{
-				ready++;
+				mq_backend *mq = get_backend(fds[i].queue);
+				int curr_flag = get_flags(fds[i].queue);
+				fds[i].revents = fds[i].events & mq->curr;
+				if (curr_flag & MSG_QUEUE_WRITER)
+				{
+					fds[i].revents |= mq->curr & MQPOLL_NOWRITERS;
+				}
+				if (curr_flag & MSG_QUEUE_READER)
+				{
+					fds[i].revents |= mq->curr & MQPOLL_NOREADERS;
+				}
+				if (fds[i].revents)
+				{
+					ready++;
+				}
 			}
 		}
 		if (ready)
 		{
 			break;
 		}
-		cond_wait(&status, &lock);
+		cond_wait(&public->status, &public->lock);
 	}
-	mutex_unlock(&lock);
+	mutex_unlock(&public->lock);
 	for (long unsigned int i = 0; i < nfds; i++)
 	{
 		if (fds[i].queue == MSG_QUEUE_NULL)
@@ -554,8 +568,9 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		list_init(&mq->the_list);
 		mutex_unlock(&mq->mutex);
 	}
-	cond_destroy(&status);
-	mutex_unlock(&lock);
+	cond_destroy(&public->status);
+	mutex_unlock(&public->lock);
 	free(queue);
+	free(public);
 	return ready;
 }

@@ -12,7 +12,7 @@
 
 # The flags are described in errors.h
 # Enable the NDEBUG flag if you want to see the timing results in multiprod
-EXTRA_CFLAGS = #-DNDEBUG -DDEBUG_VERBOSE
+EXTRA_CFLAGS = -DNDEBUG -DDEBUG_VERBOSE
 
 CC = gcc
 CFLAGS := -g3 -Wall -Wextra -Werror -pthread $(EXTRA_CFLAGS) $(CFLAGS)
