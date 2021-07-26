@@ -28,14 +28,6 @@
 #include "msg_queue.h"
 #include "ring_buffer.h"
 
-typedef struct wait_queue
-{
-	int curr_event;
-	list_entry lst;
-	mutex_t* lock;
-	cond_t* status;
-} wait_queue;
-
 // Message queue implementation backend
 typedef struct mq_backend
 {
@@ -67,6 +59,14 @@ typedef struct mq_backend
 	list_head the_list;
 
 } mq_backend;
+
+typedef struct wait_queue
+{
+	int curr_event;
+	list_entry lst;
+	mutex_t *lock;
+	cond_t *status;
+} wait_queue;
 
 static int mq_init(mq_backend *mq, size_t capacity)
 {
@@ -276,12 +276,18 @@ int msg_queue_close(msg_queue_t *queue)
 	if (mq->no_readers)
 	{
 		cond_broadcast(&(mq->full));
-		mq->curr |= MQPOLL_WRITABLE | MQPOLL_NOREADERS;
+		// a msg_queue_close() call in another thread that closed the last reader
+ 		// handle to this queue (MQPOLL_NOREADERS must also be reported in this case).
+		mq->curr |= MQPOLL_WRITABLE;
+		mq->curr |= MQPOLL_NOREADERS;
 	}
 	if (mq->no_writers)
 	{
 		cond_broadcast(&(mq->empty));
-		mq->curr |= MQPOLL_READABLE | MQPOLL_NOWRITERS;
+		// a msg_queue_close() call in another thread that closed the last writer
+    	// handle to this queue (MQPOLL_NOWRITERS must also be reported in this case).
+		mq->curr |= MQPOLL_READABLE;
+		mq->curr |= MQPOLL_NOWRITERS;
 	}
 	*queue = MSG_QUEUE_NULL;
 	mutex_unlock(&mq->mutex);
@@ -337,17 +343,39 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		mutex_unlock(&be->mutex);
 		errno = EMSGSIZE;
 		report_error("msg_queue_read: The buffer is not large enough to hold the message.");
-		return ~size;
+		return -size;
 	}
 	// do the actual read
 	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
 	ring_buffer_read(&be->buffer, buffer, size);
-	cond_signal(&be->full);
-	if (be->writers > 0 && ring_buffer_used(&be->buffer) == 0)
+	if (be->writers > 0)
 	{
-		be->curr &= ~MQPOLL_READABLE;
+		if (ring_buffer_used(&be->buffer))
+		{
+			// check if there's something else able to read
+			size_t size_left;
+			ring_buffer_peek(&be->buffer, &size_left, sizeof(size_t));
+			if (size_left > 0)
+			{
+				be->curr |= MQPOLL_READABLE;
+			}
+		}
+		else
+		{
+			// it's not readable
+			be->curr &= ~MQPOLL_READABLE;
+		}
 	}
+	else
+	{
+		// no writer means readable
+		be->curr |= MQPOLL_READABLE;
+	}
+	// signal the writer
+	cond_signal(&be->full);
+	// change it to writable
 	be->curr |= MQPOLL_WRITABLE;
+	// update everything in the wait queue
 	list_entry *curr_entry = NULL;
 	wait_queue *dentry = NULL;
 	list_for_each(curr_entry, &be->the_list)
@@ -409,6 +437,7 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 			return -1;
 		}
 	}
+
 	// wait till space is enough for the whole sentence
 	while (ring_buffer_free(&be->buffer) < length + sizeof(size_t))
 	{
@@ -422,17 +451,35 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		cond_wait(&be->full, &be->mutex);
 	}
 
+	// change to readable
 	be->curr |= MQPOLL_READABLE;
 	// do the write
 	// head
 	ring_buffer_write(&be->buffer, &length, sizeof(size_t));
 	// actual material
 	ring_buffer_write(&be->buffer, buffer, length);
+	// signal the reader
 	cond_signal(&be->empty);
-	if (be->readers > 0 && ring_buffer_free(&be->buffer) == 0)
+
+	if (be->readers > 0)
 	{
-		be->curr = be->curr & ~MQPOLL_WRITABLE;
+		// check if there's enough space left
+		if (ring_buffer_free(&be->buffer) > sizeof(size_t) + 1024)
+		{
+			be->curr |= MQPOLL_WRITABLE;
+		}
+		else
+		{
+			// not writeable then
+			be->curr &= ~MQPOLL_WRITABLE;
+		}
 	}
+	else
+	// no reader means writeable
+	{
+		be->curr |= MQPOLL_WRITABLE;
+	}
+	// update everything in wait queue
 	list_entry *curr_entry = NULL;
 	wait_queue *dentry = NULL;
 	list_for_each(curr_entry, &be->the_list)
@@ -465,8 +512,9 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		return -1;
 	}
 
+	// go through fds, do the error checking
 	unsigned int num_null = 0;
-	for (unsigned int i = 0; i < nfds; i++)
+	for (long unsigned int i = 0; i < nfds; i++)
 	{
 		if (fds[i].queue == MSG_QUEUE_NULL)
 		{
@@ -487,19 +535,19 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 			return -1;
 		}
 	}
-
+	// if everything is NULL
 	if (num_null == nfds)
 	{
 		errno = EINVAL;
 		report_error("msg_queue_poll: No events are subscribed to");
 		return -1;
 	}
-
+	// init mutex and cond
 	mutex_t mutex;
 	cond_t cond;
 	mutex_init(&mutex);
 	cond_init(&cond);
-
+	// malloc space for wait queue
 	wait_queue *queue = (wait_queue *)malloc(sizeof(wait_queue) * nfds);
 	if (!queue)
 	{
@@ -507,7 +555,8 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		report_error("msg_queue_poll: not enough memory for queue");
 		return -1;
 	}
-	for (unsigned int i = 0; i < nfds; ++i)
+	// init wait queue
+	for (long unsigned int i = 0; i < nfds; i++)
 	{
 		mq_backend *mq = get_backend(fds[i].queue);
 		if (fds[i].queue == MSG_QUEUE_NULL)
@@ -523,6 +572,7 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 
 	mutex_lock(&mutex);
 	int ready = 0;
+	// wait till at least 1 event triggered
 	while (!ready)
 	{
 		for (long unsigned int i = 0; i < nfds; i++)
@@ -544,6 +594,7 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		cond_wait(&cond, &mutex);
 	}
 	mutex_unlock(&mutex);
+	// clean up queue
 	for (long unsigned int i = 0; i < nfds; i++)
 	{
 		if (fds[i].queue == MSG_QUEUE_NULL)
@@ -555,6 +606,7 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		list_init(&mq->the_list);
 		mutex_unlock(&mq->mutex);
 	}
+	// free everything
 	cond_destroy(&cond);
 	mutex_unlock(&mutex);
 	free(queue);

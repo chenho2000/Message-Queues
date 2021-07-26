@@ -42,3 +42,13 @@ OBJ_FILES = $(SRC_FILES:.c=.o)
 
 clean:
 	rm -f $(OBJ_FILES) $(OBJ_FILES:.o=.d) $(ALL_TESTS)
+
+test:
+	./multiprod 64 8 512
+	./multiprod 64 64 512
+	./multiprod 64 128 512
+
+test2:
+	./multiprod 64 256 512
+	./multiprod 64 512 512
+	./multiprod 64 512 $((512*32))
