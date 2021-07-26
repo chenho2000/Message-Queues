@@ -336,7 +336,13 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 	}
 
 	// read the header (size) without take it out of the buffer
-	ring_buffer_peek(&be->buffer, &size, sizeof(size_t));
+	bool result = ring_buffer_peek(&be->buffer, &size, sizeof(size_t));
+	if(!result){
+		mutex_unlock(&be->mutex);
+		errno = EMSGSIZE;
+		report_error("msg_queue_read: Ring buffer peek error.");
+		return -1;
+	} 
 	// check if length is enough
 	if (length < size)
 	{
@@ -346,15 +352,33 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		return -size;
 	}
 	// do the actual read
-	ring_buffer_read(&be->buffer, &size, sizeof(size_t));
-	ring_buffer_read(&be->buffer, buffer, size);
+	result = ring_buffer_read(&be->buffer, &size, sizeof(size_t));
+	if(!result){
+		mutex_unlock(&be->mutex);
+		errno = EMSGSIZE;
+		report_error("msg_queue_read: Ring buffer read error.");
+		return -1;
+	} 
+	result = ring_buffer_read(&be->buffer, buffer, size);
+	if(!result){
+		mutex_unlock(&be->mutex);
+		errno = EMSGSIZE;
+		report_error("msg_queue_read: Ring buffer read error.");
+		return -1;
+	} 
 	if (be->writers > 0)
 	{
 		if (ring_buffer_used(&be->buffer))
 		{
 			// check if there's something else able to read
 			size_t size_left;
-			ring_buffer_peek(&be->buffer, &size_left, sizeof(size_t));
+			result = ring_buffer_peek(&be->buffer, &size_left, sizeof(size_t));
+			if(!result){
+				mutex_unlock(&be->mutex);
+				errno = EMSGSIZE;
+				report_error("msg_queue_read: Ring buffer read error.");
+				return -1;
+			} 
 			if (size_left > 0)
 			{
 				be->curr |= MQPOLL_READABLE;
@@ -455,9 +479,21 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 	be->curr |= MQPOLL_READABLE;
 	// do the write
 	// head
-	ring_buffer_write(&be->buffer, &length, sizeof(size_t));
+	bool result = ring_buffer_write(&be->buffer, &length, sizeof(size_t));
+	if(!result){
+		mutex_unlock(&be->mutex);
+		errno = EMSGSIZE;
+		report_error("msg_queue_write: Ring buffer write error.");
+		return -1;
+	} 
 	// actual material
-	ring_buffer_write(&be->buffer, buffer, length);
+	result = ring_buffer_write(&be->buffer, buffer, length);
+	if(!result){
+		mutex_unlock(&be->mutex);
+		errno = EMSGSIZE;
+		report_error("msg_queue_write: Ring buffer write error.");
+		return -1;
+	} 
 	// signal the reader
 	cond_signal(&be->empty);
 
