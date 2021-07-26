@@ -530,16 +530,7 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 			if (fds[i].queue != MSG_QUEUE_NULL)
 			{
 				mq_backend *mq = get_backend(fds[i].queue);
-				int curr_flag = get_flags(fds[i].queue);
 				fds[i].revents = fds[i].events & mq->curr;
-				if (curr_flag & MSG_QUEUE_WRITER)
-				{
-					fds[i].revents |= mq->curr & MQPOLL_NOWRITERS;
-				}
-				if (curr_flag & MSG_QUEUE_READER)
-				{
-					fds[i].revents |= mq->curr & MQPOLL_NOREADERS;
-				}
 				if (fds[i].revents)
 				{
 					ready++;
