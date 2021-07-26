@@ -28,17 +28,12 @@
 #include "msg_queue.h"
 #include "ring_buffer.h"
 
-typedef struct public_lock
-{
-	mutex_t lock;
-	cond_t status;
-} public_lock;
-
 typedef struct wait_queue
 {
 	int curr_event;
 	list_entry lst;
-	public_lock *public;
+	mutex_t* lock;
+	cond_t* status;
 } wait_queue;
 
 // Message queue implementation backend
@@ -360,10 +355,9 @@ ssize_t msg_queue_read(msg_queue_t queue, void *buffer, size_t length)
 		dentry = container_of(curr_entry, wait_queue, lst);
 		if (dentry->curr_event & be->curr)
 		{
-			public_lock *public = dentry->public;
-			mutex_lock(&public->lock);
-			cond_signal(&public->status);
-			mutex_unlock(&public->lock);
+			mutex_lock(dentry->lock);
+			cond_signal(dentry->status);
+			mutex_unlock(dentry->lock);
 		}
 	}
 	mutex_unlock(&be->mutex);
@@ -446,10 +440,9 @@ int msg_queue_write(msg_queue_t queue, const void *buffer, size_t length)
 		dentry = container_of(curr_entry, wait_queue, lst);
 		if (dentry->curr_event & be->curr)
 		{
-			public_lock *public = dentry->public;
-			mutex_lock(&public->lock);
-			cond_signal(&public->status);
-			mutex_unlock(&public->lock);
+			mutex_lock(dentry->lock);
+			cond_signal(dentry->status);
+			mutex_unlock(dentry->lock);
 		}
 	}
 	mutex_unlock(&be->mutex);
@@ -502,16 +495,18 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		return -1;
 	}
 
+	mutex_t mutex;
+	cond_t cond;
+	mutex_init(&mutex);
+	cond_init(&cond);
+
 	wait_queue *queue = (wait_queue *)malloc(sizeof(wait_queue) * nfds);
-	public_lock *public = (public_lock *)malloc(sizeof(public_lock));
-	if (!queue || !public)
+	if (!queue)
 	{
 		errno = ENOMEM;
 		report_error("msg_queue_poll: not enough memory for queue");
 		return -1;
 	}
-	cond_init(&public->status);
-	mutex_init(&public->lock);
 	for (unsigned int i = 0; i < nfds; ++i)
 	{
 		mq_backend *mq = get_backend(fds[i].queue);
@@ -519,13 +514,14 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 			continue;
 		mutex_lock(&mq->mutex);
 		list_entry_init(&queue[i].lst);
-		queue[i].public = public;
+		queue[i].lock = &mutex;
+		queue[i].status = &cond;
 		queue[i].curr_event = fds[i].events;
 		list_add_tail(&mq->the_list, &queue[i].lst);
 		mutex_unlock(&mq->mutex);
 	}
 
-	mutex_lock(&public->lock);
+	mutex_lock(&mutex);
 	int ready = 0;
 	while (!ready)
 	{
@@ -554,9 +550,9 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		{
 			break;
 		}
-		cond_wait(&public->status, &public->lock);
+		cond_wait(&cond, &mutex);
 	}
-	mutex_unlock(&public->lock);
+	mutex_unlock(&mutex);
 	for (long unsigned int i = 0; i < nfds; i++)
 	{
 		if (fds[i].queue == MSG_QUEUE_NULL)
@@ -568,9 +564,8 @@ int msg_queue_poll(msg_queue_pollfd *fds, size_t nfds)
 		list_init(&mq->the_list);
 		mutex_unlock(&mq->mutex);
 	}
-	cond_destroy(&public->status);
-	mutex_unlock(&public->lock);
+	cond_destroy(&cond);
+	mutex_unlock(&mutex);
 	free(queue);
-	free(public);
 	return ready;
 }
