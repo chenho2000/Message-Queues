@@ -1,3 +1,5 @@
+# Message Queues
+*This repository stores work done by Hongyu Chen and Ming Gong in CSC369 Operating Systems.*
 # Introduction
 
 In this assignment, we will complete the implementation of a message queue by incorporating the necessary locks and condition variable operations to synchronize access to the message queue. Additionally, we will implement I/O multiplexing functionality, inspired by the `poll()` system call.
